@@ -3,6 +3,8 @@ const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { hashPassword, verifyPassword, createSession, destroySession, getCookie, getUser, sessionCookie, clearCookie } = require('./auth');
+const { readUsers, writeUsers } = require('./users');
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
 const dataPath = process.env.DATA_FILE || path.join(root, 'data', 'projects.json');
@@ -19,11 +21,56 @@ async function readProjects(){
  catch(err){ if(err.code !== 'ENOENT') throw err; await fs.mkdir(path.dirname(dataPath),{recursive:true}); await fs.writeFile(dataPath, JSON.stringify(sample,null,2)); return structuredClone(sample); }
 }
 async function writeProjects(projects){ await fs.mkdir(path.dirname(dataPath),{recursive:true}); const tmp = dataPath+'.tmp'; await fs.writeFile(tmp,JSON.stringify(projects,null,2)); await fs.rename(tmp,dataPath); }
-function send(res,status,payload){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(payload));}
+function send(res,status,payload,extraHeaders={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...extraHeaders});res.end(JSON.stringify(payload));}
 async function bodyJSON(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>20000){const e=Error('Request body too large');e.status=413;throw e;}}try{return JSON.parse(text);}catch{const e=Error('Invalid JSON');e.status=400;throw e;}}
 function validate(obj,patch=false){if(!obj || typeof obj !== 'object' || Array.isArray(obj))return 'Invalid project object';if(!patch || Object.hasOwn(obj,'name')){if(typeof obj.name!=='string'||obj.name.trim().length<3||obj.name.trim().length>60)return 'Project name must be 3–60 characters';}if(Object.hasOwn(obj,'description')&&(typeof obj.description!=='string'||obj.description.length>240))return 'Description must be 240 characters or fewer';if(Object.hasOwn(obj,'visibility')&&!['private','public'].includes(obj.visibility))return 'Invalid visibility';if(patch&&!['name','description','visibility'].some(k=>Object.hasOwn(obj,k)))return 'No editable fields supplied';return null;}
 async function handleAPI(req,res,url){
  if(url.pathname==='/api/health'&&req.method==='GET')return send(res,200,{status:'ok'});
+
+ // Регистрация нового пользователя
+ if (url.pathname === '/api/auth/register') {
+  if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
+  const input = (await bodyJSON(req)) || {};
+  const username = typeof input.username === 'string' ? input.username.trim() : '';
+  const password = typeof input.password === 'string' ? input.password : '';
+  if (username.length < 3 || username.length > 30) return send(res, 400, { error: 'Username must be 3–30 characters' });
+  if (password.length < 8 || password.length > 100) return send(res, 400, { error: 'Password must be 8–100 characters' });
+  const users = await readUsers();
+  if (users.some(u => u.username.toLowerCase() === username.toLowerCase())) return send(res, 409, { error: 'Username already taken' });
+  const user = { id: randomUUID(), username, passwordHash: hashPassword(password), createdAt: new Date().toISOString() };
+  users.push(user);
+  await writeUsers(users);
+  return send(res, 201, { user: { id: user.id, username: user.username } });
+ }
+
+ // Вход: проверяем пароль и выдаём пропуск (cookie)
+ if (url.pathname === '/api/auth/login') {
+  if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
+  const input = (await bodyJSON(req)) || {};
+  const username = typeof input.username === 'string' ? input.username.trim() : '';
+  const password = typeof input.password === 'string' ? input.password : '';
+  const users = await readUsers();
+  const user = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+  if (!user || !verifyPassword(password, user.passwordHash)) return send(res, 401, { error: 'Invalid username or password' });
+  const sid = createSession(user.id);
+  return send(res, 200, { user: { id: user.id, username: user.username } }, { 'Set-Cookie': sessionCookie(sid) });
+ }
+
+ // Выход: аннулируем пропуск
+ if (url.pathname === '/api/auth/logout') {
+  if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
+  const sid = getCookie(req, 'sid');
+  if (sid) destroySession(sid);
+  return send(res, 200, { ok: true }, { 'Set-Cookie': clearCookie() });
+ }
+
+ // Кто я? Показывает текущего пользователя по пропуску
+ if (url.pathname === '/api/me') {
+  if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
+  const user = await getUser(req);
+  if (!user) return send(res, 401, { error: 'Not logged in' });
+  return send(res, 200, { user: { id: user.id, username: user.username } });
+ }
  if(!url.pathname.startsWith('/api/projects'))return send(res,404,{error:'API route not found'});
  const parts = url.pathname.split('/').filter(Boolean);
 const id = parts[2];
@@ -96,6 +143,6 @@ if (parts.length > 3) {
  return send(res,405,{error:'Method not allowed'});
 }
 async function serveStatic(req,res,url){if(req.method!=='GET')return send(res,405,{error:'Method not allowed'});let relative=decodeURIComponent(url.pathname);if(relative==='/' )relative='/index.html';const target=path.resolve(publicDir,'.'+relative);if(target!==publicDir&&!target.startsWith(publicDir+path.sep))return send(res,403,{error:'Forbidden'});try{const data=await fs.readFile(target);res.writeHead(200,{'Content-Type':contentTypes[path.extname(target)]||'application/octet-stream','X-Content-Type-Options':'nosniff'});res.end(data);}catch(e){if(e.code==='ENOENT'||e.code==='EISDIR')return send(res,404,{error:'Page not found'});throw e;}}
-const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://localhost'); const work=async()=>{try{if(url.pathname.startsWith('/api/'))await handleAPI(req,res,url);else await serveStatic(req,res,url);}catch(e){send(res,e.status||500,{error:e.status?e.message:'Internal server error'});console.error(e);}};if(['POST','PATCH','DELETE','PUT'].includes(req.method)&&url.pathname.startsWith('/api/projects')){queue=queue.then(work,work);}else work();});
+const server=http.createServer((req,res)=>{const url=new URL(req.url,'http://localhost'); const work=async()=>{try{if(url.pathname.startsWith('/api/'))await handleAPI(req,res,url);else await serveStatic(req,res,url);}catch(e){send(res,e.status||500,{error:e.status?e.message:'Internal server error'});console.error(e);}};if(['POST','PATCH','DELETE','PUT'].includes(req.method)&&(url.pathname.startsWith('/api/projects')||url.pathname.startsWith('/api/auth/'))){queue=queue.then(work,work);}else work();});
 if(require.main===module)server.listen(PORT,()=>console.log(`DevCollab running at http://localhost:${PORT}`));
 module.exports={server};
