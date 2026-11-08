@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="description" content="DevCollab student collaboration platform">
+    <title>DevCollab · Projects</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+</head>
+
+<body>
+    <div class="shell">
+        <aside class="sidebar" aria-label="Main navigation"><a class="brand" href="/">&lt;/&gt;
+                <span>DevCollab</span></a>
+            <nav><button class="nav-item active" id="navProjects" type="button">▦ &nbsp; Projects</button><button
+                    class="nav-item" id="navShared" type="button">♧ &nbsp; Shared with me</button><button
+                    class="nav-item" id="navSessions" type="button">◷ &nbsp; Active sessions</button></nav>
+            <div class="sidebar-foot"><span class="avatar">DC</span><span>Student workspace<small>Week 9–10
+                        prototype</small></span></div>
+        </aside>
+        <main class="main">
+            <header class="topbar">
+                <div>
+                    <p class="eyebrow">YOUR WORKSPACE</p>
+                    <h1 id="pageTitle">Projects</h1>
+                    <p class="muted" id="pageDescription">Manage your code projects and collaborate with classmates.</p>
+                </div><button id="newProject" class="primary">＋ New Project</button>
+            </header>
+            <section id="dashboard" aria-label="Project list">
+                <div class="toolbar"><label class="search-wrap"><span>⌕</span><input id="search" type="search"
+                            placeholder="Search projects..." aria-label="Search projects"></label><label
+                        class="visually-hidden" for="visibilityFilter">Filter projects</label><select
+                        id="visibilityFilter">
+                        <option value="all">All projects</option>
+                        <option value="private">Private</option>
+                        <option value="public">Public</option>
+                    </select></div>
+                <div id="status" role="status" aria-live="polite"></div>
+                <div id="projectGrid" class="project-grid"></div>
+            </section>
+            <section id="editorView" class="editor-view hidden" aria-label="Project editor">
+                <div class="editor-toolbar"><button id="backDashboard" class="ghost">← Back to projects</button><strong
+                        id="editorProjectName">Project</strong><span class="pill">● Demo editor</span></div>
+                <div class="editor-layout">
+                    <aside class="files-panel"><strong>FILES</strong><button class="file-row active" data-file="app">▤
+                            &nbsp; App.js</button><button class="file-row" data-file="css">▤ &nbsp;
+                            styles.css</button><button class="file-row" data-file="html">▤ &nbsp; index.html</button>
+                    </aside>
+                    <div class="code-pane">
+                        <div class="code-top">
+  <span id="fileLabel">App.js</span>
+
+  <div class="editor-actions">
+    <button id="saveCode" class="primary small" type="button">
+      Save
+    </button>
+
+    <button id="runPreview" class="primary small" type="button">
+      ▶ Preview
+    </button>
+  </div>
+</div>
+                                <textarea
+  id="codeContent"
+  class="code-editor"
+  spellcheck="false"
+  aria-label="Code editor"
+></textarea>
+                        <p class="editor-note">Read-only sample code for Week 10. Real editing and synchronization are
+                            future milestones.</p>
+                    </div>
+                    <aside class="right-panel">
+                        <div class="tabs" role="tablist"><button class="tab active" data-tab="chat" role="tab"
+                                aria-selected="true">Chat</button><button class="tab" data-tab="members" role="tab"
+                                aria-selected="false">Members</button><button class="tab" data-tab="preview" role="tab"
+                                aria-selected="false">Preview</button></div>
+                        <div id="panelContent" class="panel-content"></div>
+                    </aside>
+                </div>
+            </section>
+            <footer class="footer">DevCollab · Course project milestone · Week 9–10</footer>
+        </main>
+    </div>
+    <dialog id="projectDialog">
+        <form id="projectForm">
+            <div class="modal-heading">
+                <h2>Create a New Project</h2><button type="button" id="closeDialog" class="close"
+                    aria-label="Close">×</button>
+            </div><label for="projectName">Project name</label><input id="projectName" name="name" minlength="3"
+                maxlength="60" required placeholder="e.g. Web Programming Project"><label
+                for="projectDescription">Description</label><textarea id="projectDescription" name="description"
+                maxlength="240" placeholder="What is this project about?"></textarea>
+            <fieldset>
+                <legend>Visibility</legend><label class="radio"><input type="radio" name="visibility" value="private"
+                        checked> Private</label><label class="radio"><input type="radio" name="visibility"
+                        value="public"> Public</label>
+            </fieldset>
+            <p id="formError" role="alert"></p>
+            <div class="modal-actions"><button type="button" id="cancelDialog" class="outline">Cancel</button><button
+                    type="submit" class="primary">Create Project</button></div>
+        </form>
+    </dialog>
+</body>
+
+</html>

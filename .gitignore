@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# DevCollab local data
+devcollab-weeks9-10/data/
