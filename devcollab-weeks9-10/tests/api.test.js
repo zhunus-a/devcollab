@@ -120,3 +120,44 @@ test('permissions: login required, owner-only changes, private projects hidden',
   // Старые проекты без владельца нельзя менять никому
   assert.equal((await call('PATCH', '/api/projects/sample-ecom', { name: 'Nope' }, alice)).status, 403);
 });
+
+test('members: owner adds and removes members, members can edit files', async () => {
+  const owner = await signIn('olivia');
+  const mate = await signIn('mike');
+  const stranger = await signIn('sam');
+
+  const project = (await (await call('POST', '/api/projects', { name: 'Team project', visibility: 'private' }, owner)).json()).project;
+  const files = { files: { app: 'a', css: 'b', html: 'c' } };
+
+  // Before being added, Mike cannot even see the private project
+  assert.equal((await call('GET', '/api/projects/' + project.id, null, mate)).status, 404);
+
+  // Only the owner can add members; the username must exist; no duplicates
+  assert.equal((await call('POST', `/api/projects/${project.id}/members`, { username: 'sam' }, mate)).status, 404);
+  assert.equal((await call('POST', `/api/projects/${project.id}/members`, { username: 'nobody' }, owner)).status, 404);
+  const added = await call('POST', `/api/projects/${project.id}/members`, { username: 'mike' }, owner);
+  assert.equal(added.status, 201);
+  assert.deepEqual((await added.json()).members.map(m => m.username), ['olivia', 'mike']);
+  assert.equal((await call('POST', `/api/projects/${project.id}/members`, { username: 'mike' }, owner)).status, 409);
+
+  // A member can see the private project and save files, but cannot rename, delete or add people
+  assert.equal((await call('GET', '/api/projects/' + project.id, null, mate)).status, 200);
+  assert.equal((await call('PUT', `/api/projects/${project.id}/files`, files, mate)).status, 200);
+  assert.equal((await call('PATCH', '/api/projects/' + project.id, { name: 'Renamed' }, mate)).status, 403);
+  assert.equal((await call('DELETE', '/api/projects/' + project.id, null, mate)).status, 403);
+  assert.equal((await call('POST', `/api/projects/${project.id}/members`, { username: 'sam' }, mate)).status, 403);
+
+  // A stranger still sees nothing
+  assert.equal((await call('GET', '/api/projects/' + project.id, null, stranger)).status, 404);
+  assert.equal((await call('GET', `/api/projects/${project.id}/members`, null, stranger)).status, 404);
+
+  // The private project appears in Mike's list
+  const mikeList = (await (await call('GET', '/api/projects', null, mate)).json()).projects;
+  assert(mikeList.some(p => p.id === project.id));
+
+  // The owner can see the member list; the owner removes Mike and access is gone
+  const list = await (await call('GET', `/api/projects/${project.id}/members`, null, owner)).json();
+  const mikeId = list.members.find(m => m.username === 'mike').id;
+  assert.equal((await call('DELETE', `/api/projects/${project.id}/members/${mikeId}`, null, owner)).status, 200);
+  assert.equal((await call('GET', '/api/projects/' + project.id, null, mate)).status, 404);
+});

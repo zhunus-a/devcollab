@@ -32,14 +32,22 @@ async function requireUser(req, res) {
   if (!user) send(res, 401, { error: 'Please log in' });
   return user;
 }
-// Кто может ВИДЕТЬ проект: все, если он public; владелец, если private.
+// Кто может ВИДЕТЬ проект: все, если он public; владелец и участники, если private.
 // Старые проекты без владельца считаем публичными демо-проектами.
 function canView(user, project) {
-  return project.visibility === 'public' || !project.ownerId || (!!user && project.ownerId === user.id);
+  return project.visibility === 'public' || !project.ownerId || isOwner(user, project) || isMember(user, project);
 }
-// Кто может ИЗМЕНЯТЬ проект: только владелец
+// Кто может ИЗМЕНЯТЬ проект (название, удаление, участники): только владелец
 function isOwner(user, project) {
   return !!user && !!project.ownerId && project.ownerId === user.id;
+}
+// Участник проекта (добавлен владельцем)
+function isMember(user, project) {
+  return !!user && Array.isArray(project.members) && project.members.includes(user.id);
+}
+// Кто может РЕДАКТИРОВАТЬ ФАЙЛЫ: владелец и участники
+function canEdit(user, project) {
+  return isOwner(user, project) || isMember(user, project);
 }
 async function handleAPI(req,res,url){
  if(url.pathname==='/api/health'&&req.method==='GET')return send(res,200,{status:'ok'});
@@ -108,10 +116,10 @@ if (parts.length === 4 && parts[3] === 'files' && id) {
     return send(res, 404, { error: 'Project not found' });
   }
 
-  // Changing files: you must be logged in and be the owner
+  // Changing files: you must be logged in and be the owner or a member
   if (req.method === 'PUT') {
     if (!user) return send(res, 401, { error: 'Please log in' });
-    if (!isOwner(user, project)) return send(res, 403, { error: 'Only the owner can change files' });
+    if (!canEdit(user, project)) return send(res, 403, { error: 'Only the owner and members can change files' });
   }
 
   // Read project files
@@ -154,11 +162,58 @@ if (parts.length === 4 && parts[3] === 'files' && id) {
   }
 }
 
+// Project members: list (GET), add (POST), remove (DELETE /members/:userId)
+if (parts[3] === 'members' && id && (parts.length === 4 || parts.length === 5)) {
+  const projects = await readProjects();
+  const project = projects.find(p => p.id === id);
+  const user = await getUser(req);
+
+  if (!project || !canView(user, project)) return send(res, 404, { error: 'Project not found' });
+  if (!user) return send(res, 401, { error: 'Please log in' });
+
+  const users = await readUsers();
+  const info = (u, role) => ({ id: u.id, username: u.username, role });
+  const listMembers = () => {
+    const owner = users.find(u => u.id === project.ownerId);
+    const members = (project.members || []).map(mid => users.find(u => u.id === mid)).filter(Boolean);
+    return [...(owner ? [info(owner, 'owner')] : []), ...members.map(m => info(m, 'member'))];
+  };
+
+  if (parts.length === 4 && req.method === 'GET') {
+    if (!canEdit(user, project)) return send(res, 403, { error: 'Only the owner and members can see the member list' });
+    return send(res, 200, { members: listMembers() });
+  }
+
+  if (parts.length === 4 && req.method === 'POST') {
+    if (!isOwner(user, project)) return send(res, 403, { error: 'Only the owner can add members' });
+    const input = (await bodyJSON(req)) || {};
+    const username = typeof input.username === 'string' ? input.username.trim() : '';
+    const target = users.find(u => u.username.toLowerCase() === username.toLowerCase());
+    if (!target) return send(res, 404, { error: 'User not found' });
+    if (target.id === project.ownerId || (project.members || []).includes(target.id)) return send(res, 409, { error: 'User is already in this project' });
+    project.members = [...(project.members || []), target.id];
+    await writeProjects(projects);
+    return send(res, 201, { members: listMembers() });
+  }
+
+  if (parts.length === 5 && req.method === 'DELETE') {
+    const targetId = parts[4];
+    // The owner can remove anyone; a member can remove only themselves (leave the project)
+    if (!isOwner(user, project) && user.id !== targetId) return send(res, 403, { error: 'Only the owner can remove other members' });
+    if (!(project.members || []).includes(targetId)) return send(res, 404, { error: 'Member not found' });
+    project.members = project.members.filter(m => m !== targetId);
+    await writeProjects(projects);
+    return send(res, 200, { members: listMembers() });
+  }
+
+  return send(res, 405, { error: 'Method not allowed' });
+}
+
 if (parts.length > 3) {
   return send(res, 404, { error: 'Not found' });
 }
  if(!id&&req.method==='GET'){const user=await getUser(req);const projects=(await readProjects()).filter(p=>canView(user,p));return send(res,200,{projects});}
- if(!id&&req.method==='POST'){const user=await requireUser(req,res);if(!user)return;const input=await bodyJSON(req);const error=validate(input);if(error)return send(res,400,{error}); const project={id:randomUUID(),name:input.name.trim(),description:(input.description||'').trim(),visibility:input.visibility||'private',ownerId:user.id,language:'JavaScript',createdAt:new Date().toISOString()}; const projects=await readProjects();projects.unshift(project);await writeProjects(projects);return send(res,201,{project});}
+ if(!id&&req.method==='POST'){const user=await requireUser(req,res);if(!user)return;const input=await bodyJSON(req);const error=validate(input);if(error)return send(res,400,{error}); const project={id:randomUUID(),name:input.name.trim(),description:(input.description||'').trim(),visibility:input.visibility||'private',ownerId:user.id,members:[],language:'JavaScript',createdAt:new Date().toISOString()}; const projects=await readProjects();projects.unshift(project);await writeProjects(projects);return send(res,201,{project});}
  if(id&&['GET','PATCH','DELETE'].includes(req.method)){
  const projects=await readProjects();const i=projects.findIndex(p=>p.id===id);const user=await getUser(req);if(i<0||!canView(user,projects[i]))return send(res,404,{error:'Project not found'});
  if(req.method==='GET')return send(res,200,{project:projects[i]});
