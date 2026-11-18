@@ -24,6 +24,23 @@ async function writeProjects(projects){ await fs.mkdir(path.dirname(dataPath),{r
 function send(res,status,payload,extraHeaders={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...extraHeaders});res.end(JSON.stringify(payload));}
 async function bodyJSON(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>20000){const e=Error('Request body too large');e.status=413;throw e;}}try{return JSON.parse(text);}catch{const e=Error('Invalid JSON');e.status=400;throw e;}}
 function validate(obj,patch=false){if(!obj || typeof obj !== 'object' || Array.isArray(obj))return 'Invalid project object';if(!patch || Object.hasOwn(obj,'name')){if(typeof obj.name!=='string'||obj.name.trim().length<3||obj.name.trim().length>60)return 'Project name must be 3–60 characters';}if(Object.hasOwn(obj,'description')&&(typeof obj.description!=='string'||obj.description.length>240))return 'Description must be 240 characters or fewer';if(Object.hasOwn(obj,'visibility')&&!['private','public'].includes(obj.visibility))return 'Invalid visibility';if(patch&&!['name','description','visibility'].some(k=>Object.hasOwn(obj,k)))return 'No editable fields supplied';return null;}
+
+// ---------- Права доступа (Шаг 5) ----------
+// Требует вход: если пользователь не вошёл, отвечает 401 и возвращает null
+async function requireUser(req, res) {
+  const user = await getUser(req);
+  if (!user) send(res, 401, { error: 'Please log in' });
+  return user;
+}
+// Кто может ВИДЕТЬ проект: все, если он public; владелец, если private.
+// Старые проекты без владельца считаем публичными демо-проектами.
+function canView(user, project) {
+  return project.visibility === 'public' || !project.ownerId || (!!user && project.ownerId === user.id);
+}
+// Кто может ИЗМЕНЯТЬ проект: только владелец
+function isOwner(user, project) {
+  return !!user && !!project.ownerId && project.ownerId === user.id;
+}
 async function handleAPI(req,res,url){
  if(url.pathname==='/api/health'&&req.method==='GET')return send(res,200,{status:'ok'});
 
@@ -85,8 +102,16 @@ if (parts.length === 4 && parts[3] === 'files' && id) {
   const projects = await readProjects();
   const project = projects.find(p => p.id === id);
 
-  if (!project) {
+  const user = await getUser(req);
+
+  if (!project || !canView(user, project)) {
     return send(res, 404, { error: 'Project not found' });
+  }
+
+  // Changing files: you must be logged in and be the owner
+  if (req.method === 'PUT') {
+    if (!user) return send(res, 401, { error: 'Please log in' });
+    if (!isOwner(user, project)) return send(res, 403, { error: 'Only the owner can change files' });
   }
 
   // Read project files
@@ -132,11 +157,13 @@ if (parts.length === 4 && parts[3] === 'files' && id) {
 if (parts.length > 3) {
   return send(res, 404, { error: 'Not found' });
 }
- if(!id&&req.method==='GET'){const projects=await readProjects();return send(res,200,{projects});}
- if(!id&&req.method==='POST'){const input=await bodyJSON(req);const error=validate(input);if(error)return send(res,400,{error}); const project={id:randomUUID(),name:input.name.trim(),description:(input.description||'').trim(),visibility:input.visibility||'private',language:'JavaScript',createdAt:new Date().toISOString()}; const projects=await readProjects();projects.unshift(project);await writeProjects(projects);return send(res,201,{project});}
+ if(!id&&req.method==='GET'){const user=await getUser(req);const projects=(await readProjects()).filter(p=>canView(user,p));return send(res,200,{projects});}
+ if(!id&&req.method==='POST'){const user=await requireUser(req,res);if(!user)return;const input=await bodyJSON(req);const error=validate(input);if(error)return send(res,400,{error}); const project={id:randomUUID(),name:input.name.trim(),description:(input.description||'').trim(),visibility:input.visibility||'private',ownerId:user.id,language:'JavaScript',createdAt:new Date().toISOString()}; const projects=await readProjects();projects.unshift(project);await writeProjects(projects);return send(res,201,{project});}
  if(id&&['GET','PATCH','DELETE'].includes(req.method)){
- const projects=await readProjects();const i=projects.findIndex(p=>p.id===id);if(i<0)return send(res,404,{error:'Project not found'});
+ const projects=await readProjects();const i=projects.findIndex(p=>p.id===id);const user=await getUser(req);if(i<0||!canView(user,projects[i]))return send(res,404,{error:'Project not found'});
  if(req.method==='GET')return send(res,200,{project:projects[i]});
+ if(!user)return send(res,401,{error:'Please log in'});
+ if(!isOwner(user,projects[i]))return send(res,403,{error:'Only the owner can change this project'});
  if(req.method==='DELETE'){projects.splice(i,1);await writeProjects(projects);return send(res,200,{deleted:true});}
  const input=await bodyJSON(req);const error=validate(input,true);if(error)return send(res,400,{error});for(const key of ['name','description','visibility'])if(Object.hasOwn(input,key))projects[i][key]=typeof input[key]==='string'?input[key].trim():input[key];await writeProjects(projects);return send(res,200,{project:projects[i]});
  }
