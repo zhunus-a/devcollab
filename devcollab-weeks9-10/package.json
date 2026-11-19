@@ -1,0 +1,8 @@
+{
+  "name": "devcollab-weeks9-10",
+  "version": "0.2.0",
+  "private": true,
+  "description": "DevCollab Week 9–10 frontend and project API milestone",
+  "scripts": {"start": "node server/index.js", "test": "node --test tests/*.test.js"},
+  "engines": {"node": ">=18"}
+}
