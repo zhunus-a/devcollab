@@ -612,3 +612,26 @@ legend {
   align-items: center;
   gap: 10px;
 }
+.auth-screen {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: #f4f5ff;
+  padding: 24px;
+}
+.auth-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 32px;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 10px 40px #0001;
+}
+.auth-card form { display: grid; gap: 12px; }
+.auth-card input { padding: 12px; border: 1px solid #ccc; border-radius: 8px; }
+.auth-card button { padding: 12px; cursor: pointer; }
+#authError { color: #c62828; }
+#currentUsername { font-weight: bold; margin-bottom: 8px; }
+#logoutButton { cursor: pointer; padding: 8px; }
+#appShell.hidden, #authScreen.hidden { display: none !important; }

@@ -11,13 +11,35 @@
 </head>
 
 <body>
-    <div class="shell">
+
+<section id="authScreen" class="auth-screen">
+  <div class="auth-card">
+    <h1>DevCollab</h1>
+    <p>Collaborate on coding projects</p>
+    <h2 id="authTitle">Login</h2>
+    <form id="authForm">
+      <label for="authUsername">Username</label>
+      <input id="authUsername" required minlength="3" maxlength="30"
+             autocomplete="username">
+      <label for="authPassword">Password</label>
+      <input id="authPassword" type="password" required minlength="8"
+             autocomplete="current-password">
+      <p id="authError" role="alert"></p>
+      <button id="authSubmit" class="primary" type="submit">Login</button>
+    </form>
+    <button id="switchAuth" type="button">
+      Don't have an account? Register
+    </button>
+  </div>
+</section>
+
+    <div class="shell hidden" id="appShell">
         <aside class="sidebar" aria-label="Main navigation"><a class="brand" href="/">&lt;/&gt;
                 <span>DevCollab</span></a>
             <nav><button class="nav-item active" id="navProjects" type="button">▦ &nbsp; Projects</button><button
                     class="nav-item" id="navShared" type="button">♧ &nbsp; Shared with me</button><button
                     class="nav-item" id="navSessions" type="button">◷ &nbsp; Active sessions</button></nav>
-            <div class="sidebar-foot"><span class="avatar">DC</span><span>Student workspace<small>Week 9–10
+            <div class="sidebar-foot"><div id="currentUsername"></div><button id="logoutButton" type="button">Logout</button><span class="avatar">DC</span><span>Student workspace<small>Week 9–10
                         prototype</small></span></div>
         </aside>
         <main class="main">
