@@ -87,12 +87,16 @@ async function getFlagFull(id) {
   return rows[0] || null;
 }
 
-async function usernameToId(username) {
-  const { rows } = await db.query(
+async function resolveAssigneeId(rawValue) {
+  const val = rawValue.trim();
+  const byUsername = await db.query(
     'SELECT id FROM users WHERE LOWER(username) = LOWER($1)',
-    [username]
+    [val]
   );
-  return rows[0] ? rows[0].id : null;
+  if (byUsername.rows[0]) return byUsername.rows[0].id;
+
+  const byId = await db.query('SELECT id FROM users WHERE id = $1', [val]);
+  return byId.rows[0] ? byId.rows[0].id : null;
 }
 
 // ---------- Роутер ----------
@@ -161,7 +165,7 @@ async function handleFlagRoutes(req, res, pathname) {
           sendJson(res, 400, { error: 'Invalid assignedTo' });
           return true;
         }
-        assigneeId = await usernameToId(assignedTo.trim());
+        assigneeId = await resolveAssigneeId(assignedTo);
         if (!assigneeId || !(await isProjectPerson(m[1], assigneeId))) {
           sendJson(res, 400, { error: 'User is not a member of this project' });
           return true;
@@ -246,7 +250,7 @@ async function handleFlagRoutes(req, res, pathname) {
             sendJson(res, 400, { error: 'Invalid assignedTo' });
             return true;
           }
-          newId = await usernameToId(body.assignedTo.trim());
+          newId = await resolveAssigneeId(body.assignedTo);
           if (!newId || !(await isProjectPerson(flag.project_id, newId))) {
             sendJson(res, 400, { error: 'User is not a member of this project' });
             return true;
