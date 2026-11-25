@@ -13,13 +13,12 @@ const {
   sessionCookie,
   clearCookie,
 } = require('./auth');
-const { findByUsername, findById, createUser, readUsers } = require('./users');
+const { findByUsername, findById, createUser } = require('./users');
 const { handleFlagRoutes } = require('./flags');
 const db = require('./db');
 
 const root = path.resolve(__dirname, '..');
 const publicDir = path.join(root, 'public');
-const dataPath = process.env.DATA_FILE || path.join(root, 'data', 'projects.json');
 const PORT = Number(process.env.PORT || 3000);
 const contentTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -27,34 +26,6 @@ const contentTypes = {
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
 };
-
-let queue = Promise.resolve();
-
-const sample = [
-  { id: 'sample-web', name: 'Web Programming Project', description: 'Build a collaborative class website', visibility: 'private', language: 'JavaScript', createdAt: '2026-11-01T10:00:00.000Z' },
-  { id: 'sample-portfolio', name: 'Personal Portfolio', description: 'Personal portfolio design and components', visibility: 'private', language: 'HTML/CSS', createdAt: '2026-11-01T12:00:00.000Z' },
-  { id: 'sample-ecom', name: 'E-commerce App', description: 'Frontend storefront prototype', visibility: 'public', language: 'JavaScript', createdAt: '2026-11-02T09:00:00.000Z' },
-];
-
-async function readProjects() {
-  try {
-    const data = JSON.parse(await fs.readFile(dataPath, 'utf8'));
-    if (!Array.isArray(data)) throw Error('Invalid data file');
-    return data;
-  } catch (err) {
-    if (err.code !== 'ENOENT') throw err;
-    await fs.mkdir(path.dirname(dataPath), { recursive: true });
-    await fs.writeFile(dataPath, JSON.stringify(sample, null, 2));
-    return structuredClone(sample);
-  }
-}
-
-async function writeProjects(projects) {
-  await fs.mkdir(path.dirname(dataPath), { recursive: true });
-  const tmp = dataPath + '.tmp';
-  await fs.writeFile(tmp, JSON.stringify(projects, null, 2));
-  await fs.rename(tmp, dataPath);
-}
 
 function send(res, status, payload, extraHeaders = {}) {
   res.writeHead(status, {
@@ -110,20 +81,75 @@ async function requireUser(req, res) {
   return user;
 }
 
-function canView(user, project) {
-  return project.visibility === 'public' || !project.ownerId || isOwner(user, project) || isMember(user, project);
+function formatProject(row, memberIds = []) {
+  const visibility = row.is_public ? 'public' : 'private';
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description || '',
+    visibility,
+    isPublic: Boolean(row.is_public),
+    ownerId: row.owner_id || null,
+    members: memberIds,
+    language: row.language || 'JavaScript',
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+  };
 }
 
-function isOwner(user, project) {
-  return !!user && !!project.ownerId && project.ownerId === user.id;
+async function getProjectWithAccess(projectId, user) {
+  const { rows } = await db.query(
+    `SELECT p.*,
+            COALESCE(
+              ARRAY_AGG(m.user_id) FILTER (WHERE m.user_id IS NOT NULL),
+              '{}'
+            ) AS member_ids
+     FROM projects p
+     LEFT JOIN project_members m ON m.project_id = p.id
+     WHERE p.id = $1
+     GROUP BY p.id`,
+    [projectId]
+  );
+  if (!rows[0]) return null;
+
+  const row = rows[0];
+  const memberIds = Array.isArray(row.member_ids) ? row.member_ids : [];
+  const userId = user ? user.id : null;
+  const isOwner = Boolean(userId && row.owner_id && row.owner_id === userId);
+  const isMember = Boolean(userId && memberIds.includes(userId));
+  const canView = Boolean(row.is_public) || !row.owner_id || isOwner || isMember;
+  const canEdit = isOwner || isMember;
+
+  return {
+    row,
+    project: formatProject(row, memberIds),
+    memberIds,
+    isOwner,
+    isMember,
+    canView,
+    canEdit,
+  };
 }
 
-function isMember(user, project) {
-  return !!user && Array.isArray(project.members) && project.members.includes(user.id);
-}
-
-function canEdit(user, project) {
-  return isOwner(user, project) || isMember(user, project);
+async function listMembersForProject(project) {
+  const { rows } = await db.query(
+    `SELECT u.id, u.username
+     FROM users u
+     WHERE u.id = $1 OR u.id = ANY($2::text[])`,
+    [project.ownerId || '', project.members || []]
+  );
+  const byId = new Map(rows.map((u) => [u.id, u]));
+  const result = [];
+  if (project.ownerId && byId.has(project.ownerId)) {
+    const owner = byId.get(project.ownerId);
+    result.push({ id: owner.id, username: owner.username, role: 'owner' });
+  }
+  for (const mid of project.members || []) {
+    if (mid !== project.ownerId && byId.has(mid)) {
+      const member = byId.get(mid);
+      result.push({ id: member.id, username: member.username, role: 'member' });
+    }
+  }
+  return result;
 }
 
 async function handleAPI(req, res, url) {
@@ -133,6 +159,7 @@ async function handleAPI(req, res, url) {
     return send(res, 200, { status: 'ok' });
   }
 
+  // Регистрация
   if (url.pathname === '/api/auth/register') {
     if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
     const input = (await bodyJSON(req)) || {};
@@ -149,6 +176,7 @@ async function handleAPI(req, res, url) {
     return send(res, 201, { user: { id, username } });
   }
 
+  // Вход
   if (url.pathname === '/api/auth/login') {
     if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
     const input = (await bodyJSON(req)) || {};
@@ -163,6 +191,7 @@ async function handleAPI(req, res, url) {
     return send(res, 200, { user: { id: user.id, username: user.username } }, { 'Set-Cookie': sessionCookie(sid) });
   }
 
+  // Выход
   if (url.pathname === '/api/auth/logout') {
     if (req.method !== 'POST') return send(res, 405, { error: 'Method not allowed' });
     const sid = getCookie(req, 'sid');
@@ -170,6 +199,7 @@ async function handleAPI(req, res, url) {
     return send(res, 200, { ok: true }, { 'Set-Cookie': clearCookie() });
   }
 
+  // Текущий пользователь
   if (url.pathname === '/api/me') {
     if (req.method !== 'GET') return send(res, 405, { error: 'Method not allowed' });
     const sessionUser = await getUser(req);
@@ -185,26 +215,33 @@ async function handleAPI(req, res, url) {
   const parts = url.pathname.split('/').filter(Boolean);
   const id = parts[2];
 
+  // Файлы проекта: GET / PUT /api/projects/:id/files
   if (parts.length === 4 && parts[3] === 'files' && id) {
     if (req.method !== 'GET' && req.method !== 'PUT') {
       return send(res, 405, { error: 'Method not allowed' });
     }
 
-    const projects = await readProjects();
-    const project = projects.find((p) => p.id === id);
     const user = await getUser(req);
-
-    if (!project || !canView(user, project)) {
+    const ctx = await getProjectWithAccess(id, user);
+    if (!ctx || !ctx.canView) {
       return send(res, 404, { error: 'Project not found' });
     }
 
     if (req.method === 'PUT') {
       if (!user) return send(res, 401, { error: 'Please log in' });
-      if (!canEdit(user, project)) return send(res, 403, { error: 'Only the owner and members can change files' });
+      if (!ctx.canEdit) return send(res, 403, { error: 'Only the owner and members can change files' });
     }
 
     if (req.method === 'GET') {
-      return send(res, 200, { files: project.files || {} });
+      const { rows } = await db.query(
+        'SELECT filename, content FROM project_files WHERE project_id = $1',
+        [id]
+      );
+      const files = {};
+      for (const r of rows) {
+        files[r.filename] = r.content;
+      }
+      return send(res, 200, { files });
     }
 
     if (req.method === 'PUT') {
@@ -218,56 +255,64 @@ async function handleAPI(req, res, url) {
       ) {
         return send(res, 400, { error: 'Invalid project files' });
       }
-      project.files = Object.fromEntries(keys.map((key) => [key, input.files[key]]));
-      await writeProjects(projects);
-      return send(res, 200, { message: 'Files saved successfully', files: project.files });
+
+      const savedFiles = {};
+      for (const key of keys) {
+        savedFiles[key] = input.files[key];
+        await db.query(
+          `INSERT INTO project_files (project_id, filename, content, updated_at)
+           VALUES ($1, $2, $3, now())
+           ON CONFLICT (project_id, filename)
+           DO UPDATE SET content = EXCLUDED.content, updated_at = now()`,
+          [id, key, input.files[key]]
+        );
+      }
+
+      return send(res, 200, { message: 'Files saved successfully', files: savedFiles });
     }
   }
 
+  // Участники проекта: GET / POST /api/projects/:id/members, DELETE /api/projects/:id/members/:userId
   if (parts[3] === 'members' && id && (parts.length === 4 || parts.length === 5)) {
-    const projects = await readProjects();
-    const project = projects.find((p) => p.id === id);
     const user = await getUser(req);
-
-    if (!project || !canView(user, project)) return send(res, 404, { error: 'Project not found' });
+    const ctx = await getProjectWithAccess(id, user);
+    if (!ctx || !ctx.canView) return send(res, 404, { error: 'Project not found' });
     if (!user) return send(res, 401, { error: 'Please log in' });
 
-    const users = await readUsers();
-    const info = (u, role) => ({ id: u.id, username: u.username, role });
-    const listMembers = () => {
-      const owner = users.find((u) => u.id === project.ownerId);
-      const members = (project.members || []).map((mid) => users.find((u) => u.id === mid)).filter(Boolean);
-      return [...(owner ? [info(owner, 'owner')] : []), ...members.map((m) => info(m, 'member'))];
-    };
-
     if (parts.length === 4 && req.method === 'GET') {
-      if (!canEdit(user, project)) return send(res, 403, { error: 'Only the owner and members can see the member list' });
-      return send(res, 200, { members: listMembers() });
+      if (!ctx.canEdit) return send(res, 403, { error: 'Only the owner and members can see the member list' });
+      return send(res, 200, { members: await listMembersForProject(ctx.project) });
     }
 
     if (parts.length === 4 && req.method === 'POST') {
-      if (!isOwner(user, project)) return send(res, 403, { error: 'Only the owner can add members' });
+      if (!ctx.isOwner) return send(res, 403, { error: 'Only the owner can add members' });
       const input = (await bodyJSON(req)) || {};
       const username = typeof input.username === 'string' ? input.username.trim() : '';
-      const target = users.find((u) => u.username.toLowerCase() === username.toLowerCase());
+      const target = await findByUsername(username);
       if (!target) return send(res, 404, { error: 'User not found' });
-      if (target.id === project.ownerId || (project.members || []).includes(target.id)) {
+      if (target.id === ctx.project.ownerId || ctx.memberIds.includes(target.id)) {
         return send(res, 409, { error: 'User is already in this project' });
       }
-      project.members = [...(project.members || []), target.id];
-      await writeProjects(projects);
-      return send(res, 201, { members: listMembers() });
+      await db.query(
+        'INSERT INTO project_members (project_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [id, target.id]
+      );
+      const updated = await getProjectWithAccess(id, user);
+      return send(res, 201, { members: await listMembersForProject(updated.project) });
     }
 
     if (parts.length === 5 && req.method === 'DELETE') {
       const targetId = parts[4];
-      if (!isOwner(user, project) && user.id !== targetId) {
+      if (!ctx.isOwner && user.id !== targetId) {
         return send(res, 403, { error: 'Only the owner can remove other members' });
       }
-      if (!(project.members || []).includes(targetId)) return send(res, 404, { error: 'Member not found' });
-      project.members = project.members.filter((m) => m !== targetId);
-      await writeProjects(projects);
-      return send(res, 200, { members: listMembers() });
+      if (!ctx.memberIds.includes(targetId)) return send(res, 404, { error: 'Member not found' });
+      await db.query(
+        'DELETE FROM project_members WHERE project_id = $1 AND user_id = $2',
+        [id, targetId]
+      );
+      const updated = await getProjectWithAccess(id, user);
+      return send(res, 200, { members: await listMembersForProject(updated.project) });
     }
 
     return send(res, 405, { error: 'Method not allowed' });
@@ -277,57 +322,107 @@ async function handleAPI(req, res, url) {
     return send(res, 404, { error: 'Not found' });
   }
 
+  // Список проектов: GET /api/projects
   if (!id && req.method === 'GET') {
     const user = await getUser(req);
-    const projects = (await readProjects()).filter((p) => canView(user, p));
+    const userId = user ? user.id : null;
+
+    const { rows: projectRows } = await db.query(
+      'SELECT id, name, owner_id, is_public, created_at FROM projects ORDER BY created_at DESC'
+    );
+    const { rows: memberRows } = await db.query(
+      'SELECT project_id, user_id FROM project_members'
+    );
+
+    const membersByProject = new Map();
+    for (const m of memberRows) {
+      if (!membersByProject.has(m.project_id)) {
+        membersByProject.set(m.project_id, []);
+      }
+      membersByProject.get(m.project_id).push(m.user_id);
+    }
+
+    const projects = projectRows
+      .filter((r) => {
+        const memberIds = membersByProject.get(r.id) || [];
+        const isOwner = Boolean(userId && r.owner_id && r.owner_id === userId);
+        const isMember = Boolean(userId && memberIds.includes(userId));
+        return Boolean(r.is_public) || !r.owner_id || isOwner || isMember;
+      })
+      .map((r) => formatProject(r, membersByProject.get(r.id) || []));
+
     return send(res, 200, { projects });
   }
 
+  // Создание проекта: POST /api/projects
   if (!id && req.method === 'POST') {
     const user = await requireUser(req, res);
     if (!user) return;
     const input = await bodyJSON(req);
     const error = validate(input);
     if (error) return send(res, 400, { error });
+
+    const newId = randomUUID();
+    const name = input.name.trim();
+    const isPublic = input.visibility === 'public';
+
+    const { rows } = await db.query(
+      `INSERT INTO projects (id, name, owner_id, is_public)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [newId, name, user.id, isPublic]
+    );
+
     const project = {
-      id: randomUUID(),
-      name: input.name.trim(),
+      ...formatProject(rows[0], []),
       description: (input.description || '').trim(),
       visibility: input.visibility || 'private',
-      ownerId: user.id,
-      members: [],
-      language: 'JavaScript',
-      createdAt: new Date().toISOString(),
     };
-    const projects = await readProjects();
-    projects.unshift(project);
-    await writeProjects(projects);
     return send(res, 201, { project });
   }
 
+  // Один проект: GET / PATCH / DELETE /api/projects/:id
   if (id && ['GET', 'PATCH', 'DELETE'].includes(req.method)) {
-    const projects = await readProjects();
-    const i = projects.findIndex((p) => p.id === id);
     const user = await getUser(req);
-    if (i < 0 || !canView(user, projects[i])) return send(res, 404, { error: 'Project not found' });
-    if (req.method === 'GET') return send(res, 200, { project: projects[i] });
+    const ctx = await getProjectWithAccess(id, user);
+    if (!ctx || !ctx.canView) return send(res, 404, { error: 'Project not found' });
+
+    if (req.method === 'GET') {
+      return send(res, 200, { project: ctx.project });
+    }
+
     if (!user) return send(res, 401, { error: 'Please log in' });
-    if (!isOwner(user, projects[i])) return send(res, 403, { error: 'Only the owner can change this project' });
+    if (!ctx.isOwner) return send(res, 403, { error: 'Only the owner can change this project' });
+
     if (req.method === 'DELETE') {
-      projects.splice(i, 1);
-      await writeProjects(projects);
+      await db.query('DELETE FROM projects WHERE id = $1', [id]);
       return send(res, 200, { deleted: true });
     }
+
     const input = await bodyJSON(req);
     const error = validate(input, true);
     if (error) return send(res, 400, { error });
-    for (const key of ['name', 'description', 'visibility']) {
-      if (Object.hasOwn(input, key)) {
-        projects[i][key] = typeof input[key] === 'string' ? input[key].trim() : input[key];
-      }
-    }
-    await writeProjects(projects);
-    return send(res, 200, { project: projects[i] });
+
+    const nextName = Object.hasOwn(input, 'name') ? input.name.trim() : ctx.row.name;
+    const nextIsPublic = Object.hasOwn(input, 'visibility')
+      ? input.visibility === 'public'
+      : Boolean(ctx.row.is_public);
+
+    const { rows } = await db.query(
+      `UPDATE projects
+       SET name = $1, is_public = $2
+       WHERE id = $3
+       RETURNING *`,
+      [nextName, nextIsPublic, id]
+    );
+
+    const updated = {
+      ...formatProject(rows[0], ctx.memberIds),
+      description: Object.hasOwn(input, 'description')
+        ? input.description.trim()
+        : ctx.project.description,
+    };
+    return send(res, 200, { project: updated });
   }
 
   return send(res, 405, { error: 'Method not allowed' });
@@ -367,11 +462,7 @@ const server = http.createServer((req, res) => {
       console.error(e);
     }
   };
-  if (['POST', 'PATCH', 'DELETE', 'PUT'].includes(req.method) && (url.pathname.startsWith('/api/projects') || url.pathname.startsWith('/api/auth/'))) {
-    queue = queue.then(work, work);
-  } else {
-    work();
-  }
+  work();
 });
 
 if (require.main === module) {
