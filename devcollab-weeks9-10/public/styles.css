@@ -635,3 +635,65 @@ legend {
 #currentUsername { font-weight: bold; margin-bottom: 8px; }
 #logoutButton { cursor: pointer; padding: 8px; }
 #appShell.hidden, #authScreen.hidden { display: none !important; }
+
+#fileConflictDialog {
+    width: min(calc(100% - 24px), 880px);
+    max-height: calc(100% - 24px);
+    overflow: auto
+}
+
+#fileConflictHelp {
+    color: #56617a
+}
+
+.file-conflict {
+    min-width: 0;
+    padding-top: 12px;
+    border-top: 1px solid #d9ddeb
+}
+
+.file-conflict-versions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px
+}
+
+.file-conflict-versions label {
+    min-width: 0;
+    font-size: 13px;
+    font-weight: 700
+}
+
+.file-conflict-versions textarea {
+    height: 170px;
+    font: 13px/1.5 "SFMono-Regular", Consolas, monospace;
+    white-space: pre
+}
+
+.file-conflict-versions textarea[readonly] {
+    background: #f4f5f9
+}
+
+.file-conflict-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px
+}
+
+.file-conflict-status {
+    font-size: 13px;
+    color: #56617a
+}
+
+#saveResolution:disabled, #saveCode:disabled {
+    opacity: .55;
+    cursor: not-allowed
+}
+
+@media (max-width: 580px) {
+    .file-conflict-versions {
+        grid-template-columns: minmax(0, 1fr)
+    }
+}
