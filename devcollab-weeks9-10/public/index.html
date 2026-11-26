@@ -64,7 +64,7 @@
             </section>
             <section id="editorView" class="editor-view hidden" aria-label="Project editor">
                 <div class="editor-toolbar"><button id="backDashboard" class="ghost">← Back to projects</button><strong
-                        id="editorProjectName">Project</strong><span class="pill">● Demo editor</span></div>
+                        id="editorProjectName">Project</strong></div>
                 <div class="editor-layout">
                     <aside class="files-panel"><strong>FILES</strong><button class="file-row active" data-file="app">▤
                             &nbsp; App.js</button><button class="file-row" data-file="css">▤ &nbsp;
@@ -72,26 +72,15 @@
                     </aside>
                     <div class="code-pane">
                         <div class="code-top">
-  <span id="fileLabel">App.js</span>
-
-  <div class="editor-actions">
-    <button id="saveCode" class="primary small" type="button">
-      Save
-    </button>
-
-    <button id="runPreview" class="primary small" type="button">
-      ▶ Preview
-    </button>
-  </div>
-</div>
-                                <textarea
-  id="codeContent"
-  class="code-editor"
-  spellcheck="false"
-  aria-label="Code editor"
-></textarea>
-                        <p class="editor-note">Read-only sample code for Week 10. Real editing and synchronization are
-                            future milestones.</p>
+                            <span id="fileLabel">App.js</span>
+                            <div class="editor-actions">
+                                <button id="saveCode" class="primary small" type="button" disabled>Save</button>
+                                <button id="runPreview" class="primary small" type="button">▶ Preview</button>
+                            </div>
+                        </div>
+                        <textarea id="codeContent" class="code-editor" spellcheck="false"
+                            aria-label="Code editor" maxlength="15000" disabled></textarea>
+                        <p id="editorStatus" class="editor-note" role="status"></p>
                     </div>
                     <aside class="right-panel">
                         <div class="tabs" role="tablist"><button class="tab active" data-tab="chat" role="tab"
@@ -122,6 +111,17 @@
             <p id="formError" role="alert"></p>
             <div class="modal-actions"><button type="button" id="cancelDialog" class="outline">Cancel</button><button
                     type="submit" class="primary">Create Project</button></div>
+        </form>
+    </dialog>
+    <dialog id="fileConflictDialog" aria-labelledby="fileConflictTitle" aria-describedby="fileConflictHelp">
+        <form id="fileConflictForm">
+            <div class="modal-heading"><h2 id="fileConflictTitle">Resolve save conflicts</h2></div>
+            <p id="fileConflictHelp">Another developer changed these files. Choose a version or combine the edits in each file.</p>
+            <div id="fileConflictEntries"></div>
+            <div class="modal-actions">
+                <button type="button" id="keepEditing" class="outline">Keep editing</button>
+                <button type="submit" id="saveResolution" class="primary" disabled>Save resolution</button>
+            </div>
         </form>
     </dialog>
 </body>

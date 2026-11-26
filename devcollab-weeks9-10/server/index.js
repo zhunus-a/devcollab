@@ -10,6 +10,10 @@ const publicDir = path.join(root, 'public');
 const dataPath = process.env.DATA_FILE || path.join(root, 'data', 'projects.json');
 const PORT = Number(process.env.PORT || 3000);
 const contentTypes = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
+const fileKeys = ['app', 'css', 'html'];
+const maxFileLength = 15000;
+// A JSON escape can use six characters per code unit.
+const maxFilesBodyLength = fileKeys.length * maxFileLength * 6 + 1000;
 let queue = Promise.resolve();
 const sample = [
  {id:'sample-web', name:'Web Programming Project', description:'Build a collaborative class website', visibility:'private', language:'JavaScript', createdAt:'2026-11-01T10:00:00.000Z'},
@@ -18,11 +22,25 @@ const sample = [
 ];
 async function readProjects(){
  try {const data = JSON.parse(await fs.readFile(dataPath, 'utf8')); if (!Array.isArray(data)) throw Error('Invalid data file'); return data; }
- catch(err){ if(err.code !== 'ENOENT') throw err; await fs.mkdir(path.dirname(dataPath),{recursive:true}); await fs.writeFile(dataPath, JSON.stringify(sample,null,2)); return structuredClone(sample); }
+ catch(err){ if(err.code !== 'ENOENT') throw err; return structuredClone(sample); }
 }
 async function writeProjects(projects){ await fs.mkdir(path.dirname(dataPath),{recursive:true}); const tmp = dataPath+'.tmp'; await fs.writeFile(tmp,JSON.stringify(projects,null,2)); await fs.rename(tmp,dataPath); }
 function send(res,status,payload,extraHeaders={}){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff',...extraHeaders});res.end(JSON.stringify(payload));}
-async function bodyJSON(req){let text='';for await(const chunk of req){text+=chunk;if(text.length>20000){const e=Error('Request body too large');e.status=413;throw e;}}try{return JSON.parse(text);}catch{const e=Error('Invalid JSON');e.status=400;throw e;}}
+async function bodyJSON(req, maxLength = 20000) {
+  req.setEncoding('utf8');
+  let text = '';
+  for await (const chunk of req) {
+    text += chunk;
+    if (text.length > maxLength) {
+      throw Object.assign(Error('Request body too large'), { status: 413 });
+    }
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw Object.assign(Error('Invalid JSON'), { status: 400 });
+  }
+}
 function validate(obj,patch=false){if(!obj || typeof obj !== 'object' || Array.isArray(obj))return 'Invalid project object';if(!patch || Object.hasOwn(obj,'name')){if(typeof obj.name!=='string'||obj.name.trim().length<3||obj.name.trim().length>60)return 'Project name must be 3–60 characters';}if(Object.hasOwn(obj,'description')&&(typeof obj.description!=='string'||obj.description.length>240))return 'Description must be 240 characters or fewer';if(Object.hasOwn(obj,'visibility')&&!['private','public'].includes(obj.visibility))return 'Invalid visibility';if(patch&&!['name','description','visibility'].some(k=>Object.hasOwn(obj,k)))return 'No editable fields supplied';return null;}
 
 // ---------- Права доступа (Шаг 5) ----------
@@ -122,44 +140,46 @@ if (parts.length === 4 && parts[3] === 'files' && id) {
     if (!canEdit(user, project)) return send(res, 403, { error: 'Only the owner and members can change files' });
   }
 
-  // Read project files
-  if (req.method === 'GET') {
-    return send(res, 200, {
-      files: project.files || {}
+  const current = { files: project.files || {}, revision: project.filesRevision ?? 0 };
+  if (req.method === 'GET') return send(res, 200, current);
+
+  const input = await bodyJSON(req, maxFilesBodyLength);
+  if (
+    !input?.files ||
+    typeof input.files !== 'object' ||
+    Array.isArray(input.files) ||
+    !fileKeys.every(key =>
+      typeof input.files[key] === 'string' &&
+      input.files[key].length <= maxFileLength
+    )
+  ) {
+    return send(res, 400, { error: 'Invalid project files' });
+  }
+
+  if (!Number.isSafeInteger(input.revision) || input.revision < 0) {
+    return send(res, 400, { error: 'A valid file revision is required. Reload the editor and try again.' });
+  }
+
+  // The request queue serializes the read, revision check, and write with all project mutations.
+  if (input.revision !== current.revision) {
+    return send(res, 409, {
+      error: 'The shared files have changed since you loaded them.',
+      code: 'FILE_REVISION_CONFLICT',
+      ...current
     });
   }
 
-  // Save project files
-  if (req.method === 'PUT') {
-    const input = await bodyJSON(req);
-
-    const keys = ['app', 'css', 'html'];
-
-    if (
-      !input.files ||
-      typeof input.files !== 'object' ||
-      Array.isArray(input.files) ||
-      !keys.every(key =>
-        typeof input.files[key] === 'string' &&
-        input.files[key].length <= 15000
-      )
-    ) {
-      return send(res, 400, {
-        error: 'Invalid project files'
-      });
-    }
-
-    project.files = Object.fromEntries(
-      keys.map(key => [key, input.files[key]])
-    );
-
+  if (fileKeys.some(key => current.files[key] !== input.files[key])) {
+    project.files = Object.fromEntries(fileKeys.map(key => [key, input.files[key]]));
+    project.filesRevision = current.revision + 1;
     await writeProjects(projects);
-
-    return send(res, 200, {
-      message: 'Files saved successfully',
-      files: project.files
-    });
   }
+
+  return send(res, 200, {
+    message: 'Files saved successfully',
+    files: project.files,
+    revision: project.filesRevision ?? 0
+  });
 }
 
 // Project members: list (GET), add (POST), remove (DELETE /members/:userId)
