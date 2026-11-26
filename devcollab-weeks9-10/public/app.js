@@ -2,6 +2,7 @@
 const $ = s => document.querySelector(s);
 let projects = [];
 let projectView = 'mine';
+let projectListRequest = 0;
 let currentProject = null;
 let currentFile = null;
 let editorSession = null;
@@ -139,29 +140,68 @@ async function initializeAuth() {
 }
 function el(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
 function setStatus(message) { $('#status').textContent = message || ''; }
-async function refresh() { setStatus(''); $('#projectGrid').replaceChildren(el('p', 'muted', 'Loading projects…')); try { const result = await api('/api/projects'); projects = result.projects; renderProjects(); } catch (e) { $('#projectGrid').replaceChildren(); setStatus(`Could not load projects: ${e.message}`); } }
+async function refresh() {
+  const request = ++projectListRequest;
+  const user = currentUser;
+  const grid = $('#projectGrid');
+  setStatus('');
+  grid.replaceChildren(el('p', 'muted', 'Loading projects…'));
+  try {
+    const result = await api('/api/projects');
+    if (request !== projectListRequest || user !== currentUser) return;
+    projects = result.projects;
+    renderProjects();
+  } catch (error) {
+    if (request !== projectListRequest || user !== currentUser) return;
+    grid.replaceChildren();
+    setStatus(`Could not load projects: ${error.message}`);
+  }
+}
+
+function isSharedProject(project, userId) {
+  return project.ownerId !== userId && Array.isArray(project.members) &&
+    project.members.some(member => (member?.userId ?? member) === userId);
+}
+
 function renderProjects() {
-    const term = $('#search').value.trim().toLowerCase(), vis = $('#visibilityFilter').value; const visible = projects
-  .filter(p => {
-    if (!currentUser) return false;
+  if (!currentUser) return;
 
-    const isOwner = p.ownerId === currentUser.id;
-    const isMember = Array.isArray(p.members) &&
-      p.members.some(member =>
-        (typeof member === 'object' ? member.userId : member)
-          === currentUser.id
-      );
+  const userId = currentUser.id;
+  const ownProjects = projectView === 'mine';
+  const term = $('#search').value.trim().toLowerCase();
+  const visibility = $('#visibilityFilter').value;
+  const available = projects.filter(project =>
+    ownProjects ? project.ownerId === userId : isSharedProject(project, userId)
+  );
+  const visible = available.filter(project =>
+    (visibility === 'all' || project.visibility === visibility) &&
+    `${project.name} ${project.description || ''}`.toLowerCase().includes(term)
+  );
 
-    return projectView === 'mine'
-      ? isOwner
-      : !isOwner && isMember;
-  })
-  .filter(p =>
-    (vis === 'all' || p.visibility === vis) &&
-    `${p.name} ${p.description || ''}`
-      .toLowerCase()
-      .includes(term)
-  ); const grid = $('#projectGrid'); grid.replaceChildren(); if (!visible.length) { const empty = el('div', 'empty'); empty.append(el('strong', '', projects.length ? 'No matching projects' : 'No projects yet'), el('p', '', 'Create a project or change your search.')); grid.append(empty); return; }
+  const grid = $('#projectGrid');
+  grid.replaceChildren();
+  if (!visible.length) {
+    const empty = el('div', 'empty');
+    if (available.length) {
+      empty.append(el('strong', '', 'No matching projects'), el('p', '', 'Change the search or visibility filter.'));
+    } else if (ownProjects) {
+      empty.append(el('strong', '', 'No projects of your own'));
+      if (projects.some(project => isSharedProject(project, userId))) {
+        const shared = el('button', 'ghost', 'Open Shared with me');
+        shared.type = 'button';
+        shared.addEventListener('click', () => selectProjectView('shared'));
+        empty.append(shared);
+      } else {
+        empty.append(el('p', '', 'Create a project to get started.'));
+      }
+    } else {
+      empty.append(el('strong', '', 'No shared projects yet'),
+        el('p', '', 'Ask a project owner to add your username in Members.'));
+    }
+    grid.append(empty);
+    return;
+  }
+
     for (const p of visible) { const card = el('article', 'card'); card.append(el('span', 'folder-icon', '▣'), el('h2', '', p.name), el('p', '', p.description || 'No description yet')); const foot = el('div', 'card-foot'), actions = el('div', 'card-actions'); const open = el('button', 'ghost', 'Open'), del = el('button', 'ghost danger', 'Delete'); open.type = 'button'; del.type = 'button'; open.addEventListener('click', () => openProject(p)); del.addEventListener('click', async () => { if (!confirm(`Delete "${p.name}"?`)) return; try { await api(`/api/projects/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); await refresh(); } catch (e) { setStatus(e.message); } }); actions.append(open, del); foot.append(el('span', 'card-meta', `${p.visibility} · ${p.language || 'JavaScript'}`), actions); card.append(foot); grid.append(card); }
 }
 function fileSnapshot(files) {
@@ -490,6 +530,10 @@ async function loadMembers() {
 
 function selectProjectView(view) {
   if (!closeProject()) return;
+  if (view !== projectView) {
+    $('#search').value = '';
+    $('#visibilityFilter').value = 'all';
+  }
   projectView = view;
 
   $('#pageTitle').textContent =
@@ -500,7 +544,7 @@ function selectProjectView(view) {
   $('#navProjects').classList.toggle('active', view === 'mine');
   $('#navShared').classList.toggle('active', view === 'shared');
 
-  renderProjects();
+  refresh();
 }
 function showNotImplemented() { if (closeProject()) setStatus('This section will be implemented in a future milestone.'); }
 $('#newProject').addEventListener('click', () => { $('#formError').textContent = ''; $('#projectDialog').showModal(); $('#projectName').focus(); });
